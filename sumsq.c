@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+
 // aggregate variables
 long sum = 0;
 long odd = 0;
