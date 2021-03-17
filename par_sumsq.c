@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 // aggregate variables
 long sum = 0;
@@ -19,6 +20,8 @@ long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
 bool done = false;
+int availThreads = 0;
+
 
 //Task queue implemented as linked list.
 struct Task {
@@ -33,7 +36,7 @@ void addTask(long tnum) {
   if(head == NULL) {
     head = (struct Task*) malloc(sizeof(struct Task));
     head->tnum = tnum;
-    head->next = (struct Task*) malloc(sizeof(struct Task));
+    head->next = NULL;
     }
   else {
     current = head;
@@ -41,13 +44,27 @@ void addTask(long tnum) {
       current = current->next;
       }
     current->next = (struct Task*) malloc(sizeof(struct Task));
+    current = current->next;
     current->tnum = tnum;
     }
+}
+
+long pullNextTask() {
+  long ret = 0;
+  if(head != NULL) {
+    ret = head->tnum;
+    current = head;
+    head = head->next;
+    free(current);
+    current = head;
+  }
+  return ret;
 }
 
 //condition and mutex init
 pthread_cond_t pAvail = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;  
+
 
 // function prototypes
 void* startup(void *arg);
@@ -55,13 +72,18 @@ void* startup(void *arg);
 void calculate_square(long number);
 
 void* startup(void *arg) {
-  long *snum = (long*)arg;
+  long snum = 0;
 
   while (!done) {
     pthread_mutex_lock(&lock);
+    availThreads++;
     pthread_cond_wait(&pAvail, &lock);
+    //FIXME race condition. sometime main is able to print all numbers before worker finishes tasks
+    //Maybe use another condition based on this availablie thread
+    availThreads--;
     if(!done) {
-    calculate_square(*snum);
+    snum = pullNextTask();
+    calculate_square(snum);
     }
     pthread_mutex_unlock(&lock);
   }
@@ -118,6 +140,8 @@ int main(int argc, char* argv[])
   pthread_t tid;
   pthread_attr_t attr;
   pthread_attr_init(&attr);
+  //sem init
+ 
   
     // load numbers and add them to the queue
   FILE* fin = fopen(fn, "r");
@@ -125,12 +149,16 @@ int main(int argc, char* argv[])
   long num;
   
   
-  pthread_create(&tid, &attr, startup, &num);  
+  pthread_create(&tid, &attr, startup, NULL);  
 
 
   while (fscanf(fin, "%c %ld\n", &action, &num) == 2) {
     if (action == 'p') {            // process, do some work
       addTask(num);
+      while(availThreads <= 0) {
+        ;
+        }
+      pthread_cond_signal(&pAvail);
     } else if (action == 'w') {     // wait, nothing new happening
       sleep(num);
     } else {
@@ -140,13 +168,12 @@ int main(int argc, char* argv[])
   }
   fclose(fin);
   
-  //manage workers
+
   
-  
-  
-  
-  
+  //finish work and signal pthreads to terminate
   done = true;
+  pthread_cond_signal(&pAvail);
+  pthread_join(tid, NULL);
   
   // print results
   printf("%ld %ld %ld %ld\n", sum, odd, min, max);
