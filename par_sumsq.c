@@ -93,7 +93,10 @@ void* startup(void *arg) {
   //keep looping through work loop while done is false
   while (!done) {
     //wait for main to signal task ready
-    while (num_of_tasks <= 0 && !done) {   
+    while (num_of_tasks <= 0 && !done) {
+    if(done) {
+      break;
+      }   
       pthread_cond_wait(&pAvail, &lock);
       }      
     //if task is ready hold lock and pull task from queue
@@ -204,9 +207,7 @@ int main(int argc, char* argv[])
     }
   //signal workers that all tasks are finished
   done = true;
-  while(num_of_workers > 0) {
-    pthread_cond_broadcast(&pAvail);
-    }
+
   //join all threads
   for(int i = 0; i < numThd; i++) {
     if(pthread_join(threads[i], NULL) != 0) {
