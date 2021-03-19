@@ -20,6 +20,7 @@ long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
 int num_of_tasks = 0;
+int num_of_workers = 0;
 bool done = false;
 
 //cond mutex makes workers wait for tasks and blocks queue
@@ -87,20 +88,24 @@ void* startup(void *arg) {
   
   //hold lock before checking for task
   pthread_mutex_lock(&lock);
+  num_of_workers++;
   
   //keep looping through work loop while done is false
   while (!done) {
     //wait for main to signal task ready
-    while (num_of_tasks <= 0) {   
+    while (num_of_tasks <= 0 && !done) {   
       pthread_cond_wait(&pAvail, &lock);
       }      
     //if task is ready hold lock and pull task from queue
-    snum = pullNextTask(); 
-    num_of_tasks--;
-    pthread_mutex_unlock(&lock);    //release lock and process task
-    calculate_square(snum);    
+    if(!done) {
+      snum = pullNextTask(); 
+      num_of_tasks--;
+      pthread_mutex_unlock(&lock);    //release lock and process task
+      calculate_square(snum);
+      }    
     } 
   //when done release lock and exit
+  num_of_workers--;
   pthread_mutex_unlock(&lock);
   pthread_exit(NULL);
 }
@@ -199,7 +204,9 @@ int main(int argc, char* argv[])
     }
   //signal workers that all tasks are finished
   done = true;
-  pthread_cond_broadcast(&pAvail);
+  while(num_of_workers > 0) {
+    pthread_cond_broadcast(&pAvail);
+    }
   //join all threads
   for(int i = 0; i < numThd; i++) {
     if(pthread_join(threads[i], NULL) != 0) {
