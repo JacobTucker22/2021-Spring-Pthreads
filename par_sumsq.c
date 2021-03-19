@@ -15,10 +15,12 @@
 
 
 // aggregate variables
+// shared data should be guarded
 long sum = 0;
 long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
+//used as conditions for main and workers to communicate
 int num_of_tasks = 0;
 int num_of_workers = 0;
 bool done = false;
@@ -34,6 +36,8 @@ pthread_mutex_t varLock = PTHREAD_MUTEX_INITIALIZER;
 //addTask and pullNextTask work as FIFO.
 //that is addTask adds to the end of the list and pullNextTask pulls from the front
 //both access critical queue and should be blocked if queue is being accessed
+
+//Basic node of task queue. Holds number to process and pointer to next node
 struct Task {
   long tnum;
   struct Task* next;
@@ -42,8 +46,9 @@ struct Task {
   struct Task* head = NULL;
   struct Task* current = NULL;
   
-  //adds a task to the queue with value tnum (value in the task)
-  //The queue is critical and should be guarded
+//adds a task to the queue with value tnum (value in the task)
+//The queue is critical and should be guarded
+//dynamically allocates memory for new node
 void addTask(long tnum) {
   if(head == NULL) {
     head = (struct Task*) malloc(sizeof(struct Task));
@@ -77,12 +82,18 @@ long pullNextTask() {
 
 
 // function prototypes
-// main thread function
+
+// worker thread function
 void* startup(void *arg);
 
 //task process function
 void calculate_square(long number);
 
+//Startup is entry point for worker threads.
+//Workers will inc number of workers and wait for main to tell them when task is available
+//Then they will pull the next task, dec number of tasks and process data
+//When number of tasks is 0 and main has signalled done, they dec number of workers and exit
+//All modifications to shared data protected by locks
 void* startup(void *arg) {
   long snum = 0;
   
@@ -94,12 +105,10 @@ void* startup(void *arg) {
   while (!done) {
     //wait for main to signal task ready
     while (num_of_tasks <= 0 && !done) {
-    if(done) {
-      break;
-      }   
+      //Workers start by waiting for main to signal a task is ready   
       pthread_cond_wait(&pAvail, &lock);
       }      
-    //if task is ready hold lock and pull task from queue
+    //if task is ready hold lock and pull task from queue and dec number of tasks
     if(!done) {
       snum = pullNextTask(); 
       num_of_tasks--;
@@ -107,7 +116,7 @@ void* startup(void *arg) {
       calculate_square(snum);
       }    
     } 
-  //when done release lock and exit
+  //when done release lock, dec number of workers and exit
   num_of_workers--;
   pthread_mutex_unlock(&lock);
   pthread_exit(NULL);
@@ -151,6 +160,7 @@ void calculate_square(long number)
   pthread_mutex_unlock(&varLock);
 }
 
+//Master main thread
 int main(int argc, char* argv[])
 {
   // check and parse command line options
@@ -171,7 +181,7 @@ int main(int argc, char* argv[])
   pthread_attr_t attr;
   pthread_attr_init(&attr);
    
-    // load numbers and add them to the queue
+  // initialize variables for file transfer
   FILE* fin = fopen(fn, "r");
   char action;
   long num;
@@ -187,10 +197,12 @@ int main(int argc, char* argv[])
   //load numbers and create tasks
   while (fscanf(fin, "%c %ld\n", &action, &num) == 2) {
     if (action == 'p') {            // process, do some work
+      //queue and shared data protected by lock
       pthread_mutex_lock(&lock);
       addTask(num);
       num_of_tasks++;
       pthread_mutex_unlock(&lock);
+      //Signal worker to wake up and pull task
       pthread_cond_signal(&pAvail);
     } else if (action == 'w') {     // wait, nothing new happening
       sleep(num);
@@ -201,14 +213,14 @@ int main(int argc, char* argv[])
   }
   fclose(fin);
   
-  //wait for workers to finish
+  //wait for workers to finish pulling tasks
   while (num_of_tasks > 0) {
-    ;
+    done = false;
     }
-  //signal workers that all tasks are finished
+  //signal workers that there are no more tasks coming
   done = true;
-  //workers that were never assigned a task are still blocked
-  //Main will continue to signal this block until all workers are free
+  //workers that were never assigned a task are still sleeping
+  //Main will continue to signal this condition until all workers are awake so they can terminate
   while(num_of_workers > 0) {
     pthread_cond_signal(&pAvail);
     }
