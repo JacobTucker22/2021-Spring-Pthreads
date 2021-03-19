@@ -94,6 +94,7 @@ void* startup(void *arg) {
       }      
     //if task is ready hold lock and pull task from queue
     snum = pullNextTask(); 
+    num_of_tasks--;
     pthread_mutex_unlock(&lock);    //release lock and process task
     calculate_square(snum);    
     } 
@@ -165,7 +166,7 @@ int main(int argc, char* argv[])
   long num;
   
   for (int i = 0; i < numThd; i++) {
-    if(pthread_create(&threads[i], &attr, startup, NULL) == 0){
+    if(pthread_create(&threads[i], &attr, startup, NULL) != 0){
       printf("failed to create pthread %d", i);
       exit(EXIT_FAILURE);
       }      
@@ -198,7 +199,7 @@ int main(int argc, char* argv[])
   pthread_cond_broadcast(&pAvail);
   //join all threads
   for(int i = 0; i < numThd; i++) {
-    if(pthread_join(threads[i], NULL) == 0) {
+    if(pthread_join(threads[i], NULL) != 0) {
       printf("failed to join pthread %d/n", i);
       exit(EXIT_FAILURE);
       }
