@@ -22,9 +22,11 @@ long max = INT_MIN;
 int num_of_tasks = 0;
 bool done = false;
 
-//condition and mutex init
+//cond mutex makes workers wait for tasks and blocks queue
 pthread_cond_t pAvail = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;  
+//mutex for guarding aggregate variables
+pthread_mutex_t varLock = PTHREAD_MUTEX_INITIALIZER;
 
 
 //Task queue implemented as linked list.
@@ -108,13 +110,15 @@ void* startup(void *arg) {
  */
 void calculate_square(long number)
 {
-
   // calculate the square
   long the_square = number * number;
 
   // ok that was not so hard, but let's pretend it was
   // simulate how hard it is to square this number!
   sleep(number);
+
+  //get lock for aggregate variables
+  pthread_mutex_lock(&varLock);
 
   // let's add this to our (global) sum
   sum += the_square;
@@ -134,8 +138,10 @@ void calculate_square(long number)
   if (number > max) {
     max = number;
   }
+  
+  //unlock aggregate variable lock
+  pthread_mutex_unlock(&varLock);
 }
-
 
 int main(int argc, char* argv[])
 {
@@ -148,7 +154,6 @@ int main(int argc, char* argv[])
   char *fn = argv[1];
   //number of threads init
   int numThd = atoi(argv[2]);
-  printf("# of threads %d\n", numThd);   //double check, remove before final
   
   //pthreads init
   pthread_t* threads;
@@ -157,14 +162,13 @@ int main(int argc, char* argv[])
   //initialuze pthread attributes (default, could also just use NULL)
   pthread_attr_t attr;
   pthread_attr_init(&attr);
-  
- 
-  
+   
     // load numbers and add them to the queue
   FILE* fin = fopen(fn, "r");
   char action;
   long num;
   
+  //create correct number of threads
   for (int i = 0; i < numThd; i++) {
     if(pthread_create(&threads[i], &attr, startup, NULL) != 0){
       printf("failed to create pthread %d", i);
@@ -172,7 +176,7 @@ int main(int argc, char* argv[])
       }      
     }
 
-
+  //load numbers and create tasks
   while (fscanf(fin, "%c %ld\n", &action, &num) == 2) {
     if (action == 'p') {            // process, do some work
       pthread_mutex_lock(&lock);
@@ -189,7 +193,6 @@ int main(int argc, char* argv[])
   }
   fclose(fin);
   
-
   //wait for workers to finish
   while (num_of_tasks > 0) {
     ;
@@ -204,8 +207,7 @@ int main(int argc, char* argv[])
       exit(EXIT_FAILURE);
       }
     }
-
-  
+ 
   // print results
   printf("%ld %ld %ld %ld\n", sum, odd, min, max);
   
