@@ -16,11 +16,13 @@
 
 // aggregate variables
 // shared data should be guarded
+//protected by varLock
 long sum = 0;
 long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
 //used as conditions for main and workers to communicate
+//protected by 'lock'
 int num_of_tasks = 0;
 int num_of_workers = 0;
 bool done = false;
@@ -114,6 +116,7 @@ void* startup(void *arg) {
       num_of_tasks--;
       pthread_mutex_unlock(&lock);    //release lock and process task
       calculate_square(snum);
+      pthread_mutex_lock(&lock);      //grab lock again for cond var.
       }    
     } 
   //when done release lock, dec number of workers and exit
@@ -214,16 +217,26 @@ int main(int argc, char* argv[])
   fclose(fin);
   
   //wait for workers to finish pulling tasks
+  //lock protects num of tasks and done
+  pthread_mutex_lock(&lock);
   while (num_of_tasks > 0) {
     done = false;
+    pthread_mutex_unlock(&lock);  //unlock so workers can update
+    pthread_mutex_lock(&lock);    //relock before checking again
     }
   //signal workers that there are no more tasks coming
   done = true;
+  pthread_mutex_unlock(&lock);
   //workers that were never assigned a task are still sleeping
   //Main will continue to signal this condition until all workers are awake so they can terminate
+  pthread_mutex_lock(&lock);   //grab lock to check num of workers
   while(num_of_workers > 0) {
-    pthread_cond_signal(&pAvail);
+    pthread_cond_signal(&pAvail);  //signal workers to wake up
+    pthread_mutex_unlock(&lock);  //unlock so workers can update
+    pthread_mutex_lock(&lock);    //relock before checking again
     }
+  pthread_mutex_unlock(&lock);  //unlock lock for num of workers
+  
   //join all threads
   for(int i = 0; i < numThd; i++) {
     if(pthread_join(threads[i], NULL) != 0) {
