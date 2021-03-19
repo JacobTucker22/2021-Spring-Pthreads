@@ -207,7 +207,11 @@ int main(int argc, char* argv[])
     }
   //signal workers that all tasks are finished
   done = true;
-
+  //workers that were never assigned a task are still blocked
+  //Main will continue to signal this block until all workers are free
+  while(num_of_workers > 0) {
+    pthread_cond_signal(&pAvail);
+    }
   //join all threads
   for(int i = 0; i < numThd; i++) {
     if(pthread_join(threads[i], NULL) != 0) {
