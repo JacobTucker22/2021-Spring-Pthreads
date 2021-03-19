@@ -12,18 +12,25 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <semaphore.h>
+
 
 // aggregate variables
 long sum = 0;
 long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
+int num_of_tasks = 0;
 bool done = false;
-int availThreads = 0;
+
+//condition and mutex init
+pthread_cond_t pAvail = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;  
 
 
 //Task queue implemented as linked list.
+//addTask and pullNextTask work as FIFO.
+//that is addTask adds to the end of the list and pullNextTask pulls from the front
+//both access critical queue and should be blocked if queue is being accessed
 struct Task {
   long tnum;
   struct Task* next;
@@ -32,6 +39,8 @@ struct Task {
   struct Task* head = NULL;
   struct Task* current = NULL;
   
+  //adds a task to the queue with value tnum (value in the task)
+  //The queue is critical and should be guarded
 void addTask(long tnum) {
   if(head == NULL) {
     head = (struct Task*) malloc(sizeof(struct Task));
@@ -49,6 +58,8 @@ void addTask(long tnum) {
     }
 }
 
+//removes the current head node (task) of the queue
+//returns the value of tnum (value in that task) 
 long pullNextTask() {
   long ret = 0;
   if(head != NULL) {
@@ -61,34 +72,34 @@ long pullNextTask() {
   return ret;
 }
 
-//condition and mutex init
-pthread_cond_t pAvail = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;  
-
 
 // function prototypes
+// main thread function
 void* startup(void *arg);
 
+//task process function
 void calculate_square(long number);
 
 void* startup(void *arg) {
   long snum = 0;
-
-  while (!done) {
-    pthread_mutex_lock(&lock);
-    availThreads++;
-    pthread_cond_wait(&pAvail, &lock);
-    //FIXME race condition. sometime main is able to print all numbers before worker finishes tasks
-    //Maybe use another condition based on this availablie thread
-    availThreads--;
-    if(!done) {
-    snum = pullNextTask();
-    calculate_square(snum);
-    }
-    pthread_mutex_unlock(&lock);
-  }
   
-  return NULL;
+  //hold lock before checking for task
+  pthread_mutex_lock(&lock);
+  
+  //keep looping through work loop while done is false
+  while (!done) {
+    //wait for main to signal task ready
+    while (num_of_tasks <= 0) {   
+      pthread_cond_wait(&pAvail, &lock);
+      }      
+    //if task is ready hold lock and pull task from queue
+    snum = pullNextTask(); 
+    pthread_mutex_unlock(&lock);    //release lock and process task
+    calculate_square(snum);    
+    } 
+  //when done release lock and exit
+  pthread_mutex_unlock(&lock);
+  pthread_exit(NULL);
 }
 
 /*
@@ -132,15 +143,20 @@ int main(int argc, char* argv[])
     printf("Usage: sumsq <infile> <Number of Threads\n");
     exit(EXIT_FAILURE);
   }
+  //file pointer init
   char *fn = argv[1];
+  //number of threads init
   int numThd = atoi(argv[2]);
-  printf("# of threads %d\n", numThd);
+  printf("# of threads %d\n", numThd);   //double check, remove before final
   
   //pthreads init
-  pthread_t tid;
+  pthread_t* threads;
+  //allocate array of pthreads size of argument passed
+  threads = (pthread_t *) malloc (numThd*sizeof(pthread_t));
+  //initialuze pthread attributes (default, could also just use NULL)
   pthread_attr_t attr;
   pthread_attr_init(&attr);
-  //sem init
+  
  
   
     // load numbers and add them to the queue
@@ -148,16 +164,20 @@ int main(int argc, char* argv[])
   char action;
   long num;
   
-  
-  pthread_create(&tid, &attr, startup, NULL);  
+  for (int i = 0; i < numThd; i++) {
+    if(pthread_create(&threads[i], &attr, startup, NULL) == 0){
+      printf("failed to create pthread %d", i);
+      exit(EXIT_FAILURE);
+      }      
+    }
 
 
   while (fscanf(fin, "%c %ld\n", &action, &num) == 2) {
     if (action == 'p') {            // process, do some work
+      pthread_mutex_lock(&lock);
       addTask(num);
-      while(availThreads <= 0) {
-        ;
-        }
+      num_of_tasks++;
+      pthread_mutex_unlock(&lock);
       pthread_cond_signal(&pAvail);
     } else if (action == 'w') {     // wait, nothing new happening
       sleep(num);
@@ -169,11 +189,21 @@ int main(int argc, char* argv[])
   fclose(fin);
   
 
-  
-  //finish work and signal pthreads to terminate
+  //wait for workers to finish
+  while (num_of_tasks > 0) {
+    ;
+    }
+  //signal workers that all tasks are finished
   done = true;
-  pthread_cond_signal(&pAvail);
-  pthread_join(tid, NULL);
+  pthread_cond_broadcast(&pAvail);
+  //join all threads
+  for(int i = 0; i < numThd; i++) {
+    if(pthread_join(threads[i], NULL) == 0) {
+      printf("failed to join pthread %d/n", i);
+      exit(EXIT_FAILURE);
+      }
+    }
+
   
   // print results
   printf("%ld %ld %ld %ld\n", sum, odd, min, max);
