@@ -22,14 +22,15 @@ long odd = 0;
 long min = INT_MAX;
 long max = INT_MIN;
 //used as conditions for main and workers to communicate
-//protected by 'lock'
-int num_of_tasks = 0;
-int num_of_workers = 0;
+//protected by 'scheduleLock'
+int numOfTasks = 0;
+int numOfWorkers = 0;
 bool done = false;
 
 //cond mutex makes workers wait for tasks and blocks queue
-pthread_cond_t pAvail = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;  
+pthread_cond_t isReady = PTHREAD_COND_INITIALIZER;
+//schedule mutex protects num of tasks, workers, and done condition
+pthread_mutex_t scheduleLock = PTHREAD_MUTEX_INITIALIZER;  
 //mutex for guarding aggregate variables
 pthread_mutex_t varLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -41,20 +42,20 @@ pthread_mutex_t varLock = PTHREAD_MUTEX_INITIALIZER;
 
 //Basic node of task queue. Holds number to process and pointer to next node
 struct Task {
-  long tnum;
+  long numToProcess;
   struct Task* next;
   };
   
   struct Task* head = NULL;
   struct Task* current = NULL;
   
-//adds a task to the queue with value tnum (value in the task)
+//adds a task to the queue with value numToProcess (value in the task)
 //The queue is critical and should be guarded
 //dynamically allocates memory for new node
-void addTask(long tnum) {
+void addTask(long numToProcess) {
   if(head == NULL) {
     head = (struct Task*) malloc(sizeof(struct Task));
-    head->tnum = tnum;
+    head->numToProcess = numToProcess;
     head->next = NULL;
     }
   else {
@@ -64,16 +65,16 @@ void addTask(long tnum) {
       }
     current->next = (struct Task*) malloc(sizeof(struct Task));
     current = current->next;
-    current->tnum = tnum;
+    current->numToProcess = numToProcess;
     }
 }
 
 //removes the current head node (task) of the queue
-//returns the value of tnum (value in that task) 
+//returns the value of numToProcess (value in that task) 
 long pullNextTask() {
   long ret = 0;
   if(head != NULL) {
-    ret = head->tnum;
+    ret = head->numToProcess;
     current = head;
     head = head->next;
     free(current);
@@ -86,49 +87,49 @@ long pullNextTask() {
 // function prototypes
 
 // worker thread function
-void* startup(void *arg);
+void* Startup(void *arg);
 
 //task process function
-void calculate_square(long number);
+void CalculateSquare(long number);
 
 //Startup is entry point for worker threads.
-//Workers will inc number of workers and wait for main to tell them when task is available
+//Workers will inc number of workers and wait for master to signal isReady
 //Then they will pull the next task, dec number of tasks and process data
 //When number of tasks is 0 and main has signalled done, they dec number of workers and exit
 //All modifications to shared data protected by locks
-void* startup(void *arg) {
-  long snum = 0;
+void* Startup(void *arg) {
+  long numToSquare = 0;
   
-  //hold lock before checking for task
-  pthread_mutex_lock(&lock);
-  num_of_workers++;
+  //hold scheduleLock before checking for task
+  pthread_mutex_lock(&scheduleLock);
+  numOfWorkers++;
   
   //keep looping through work loop while done is false
   while (!done) {
     //wait for main to signal task ready
-    while (num_of_tasks <= 0 && !done) {
-      //Workers start by waiting for main to signal a task is ready   
-      pthread_cond_wait(&pAvail, &lock);
+    while (numOfTasks <= 0 && !done) {
+      //Workers start by waiting for master to signal ready for worker  
+      pthread_cond_wait(&isReady, &scheduleLock);
       }      
-    //if task is ready hold lock and pull task from queue and dec number of tasks
+    //if task is ready hold scheduleLock and pull task from queue and dec number of tasks
     if(!done) {
-      snum = pullNextTask(); 
-      num_of_tasks--;
-      pthread_mutex_unlock(&lock);    //release lock and process task
-      calculate_square(snum);
-      pthread_mutex_lock(&lock);      //grab lock again for cond var.
+      numToSquare = pullNextTask(); 
+      numOfTasks--;
+      pthread_mutex_unlock(&scheduleLock);    //release scheduleLock and process task
+      CalculateSquare(numToSquare);
+      pthread_mutex_lock(&scheduleLock);      //grab scheduleLock again for cond var.
       }    
     } 
-  //when done release lock, dec number of workers and exit
-  num_of_workers--;
-  pthread_mutex_unlock(&lock);
+  //when done release scheduleLock, dec number of workers and exit
+  numOfWorkers--;
+  pthread_mutex_unlock(&scheduleLock);
   pthread_exit(NULL);
 }
 
 /*
  * update global aggregate variables given a number
  */
-void calculate_square(long number)
+void CalculateSquare(long number)
 {
   // calculate the square
   long the_square = number * number;
@@ -137,7 +138,7 @@ void calculate_square(long number)
   // simulate how hard it is to square this number!
   sleep(number);
 
-  //get lock for aggregate variables
+  //get varLock for aggregate variables
   pthread_mutex_lock(&varLock);
 
   // let's add this to our (global) sum
@@ -159,7 +160,7 @@ void calculate_square(long number)
     max = number;
   }
   
-  //unlock aggregate variable lock
+  //unlock aggregate variable varLock
   pthread_mutex_unlock(&varLock);
 }
 
@@ -191,7 +192,7 @@ int main(int argc, char* argv[])
   
   //create correct number of threads
   for (int i = 0; i < numThd; i++) {
-    if(pthread_create(&threads[i], &attr, startup, NULL) != 0){
+    if(pthread_create(&threads[i], &attr, Startup, NULL) != 0){
       printf("failed to create pthread %d", i);
       exit(EXIT_FAILURE);
       }      
@@ -200,13 +201,13 @@ int main(int argc, char* argv[])
   //load numbers and create tasks
   while (fscanf(fin, "%c %ld\n", &action, &num) == 2) {
     if (action == 'p') {            // process, do some work
-      //queue and shared data protected by lock
-      pthread_mutex_lock(&lock);
+      //queue and shared data protected by scheduleLock
+      pthread_mutex_lock(&scheduleLock);
       addTask(num);
-      num_of_tasks++;
-      pthread_mutex_unlock(&lock);
+      numOfTasks++;
+      pthread_mutex_unlock(&scheduleLock);
       //Signal worker to wake up and pull task
-      pthread_cond_signal(&pAvail);
+      pthread_cond_signal(&isReady);
     } else if (action == 'w') {     // wait, nothing new happening
       sleep(num);
     } else {
@@ -217,25 +218,25 @@ int main(int argc, char* argv[])
   fclose(fin);
   
   //wait for workers to finish pulling tasks
-  //lock protects num of tasks and done
-  pthread_mutex_lock(&lock);
-  while (num_of_tasks > 0) {
+  //scheduleLock protects num of tasks and done
+  pthread_mutex_lock(&scheduleLock);
+  while (numOfTasks > 0) {
     done = false;
-    pthread_mutex_unlock(&lock);  //unlock so workers can update
-    pthread_mutex_lock(&lock);    //relock before checking again
+    pthread_mutex_unlock(&scheduleLock);  //unlock so workers can update
+    pthread_mutex_lock(&scheduleLock);    //relock before checking again
     }
   //signal workers that there are no more tasks coming
   done = true;
-  pthread_mutex_unlock(&lock);
+  pthread_mutex_unlock(&scheduleLock);
   //workers that were never assigned a task are still sleeping
   //Main will continue to signal this condition until all workers are awake so they can terminate
-  pthread_mutex_lock(&lock);   //grab lock to check num of workers
-  while(num_of_workers > 0) {
-    pthread_cond_signal(&pAvail);  //signal workers to wake up
-    pthread_mutex_unlock(&lock);  //unlock so workers can update
-    pthread_mutex_lock(&lock);    //relock before checking again
+  pthread_mutex_lock(&scheduleLock);   //grab scheduleLock to check num of workers
+  while(numOfWorkers > 0) {
+    pthread_cond_signal(&isReady);  //signal workers to wake up
+    pthread_mutex_unlock(&scheduleLock);  //unlock so workers can update
+    pthread_mutex_lock(&scheduleLock);    //relock before checking again
     }
-  pthread_mutex_unlock(&lock);  //unlock lock for num of workers
+  pthread_mutex_unlock(&scheduleLock);  //unlock scheduleLock for num of workers
   
   //join all threads
   for(int i = 0; i < numThd; i++) {
